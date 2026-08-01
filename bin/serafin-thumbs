@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# serafin-thumbs — miniaturas 1280px + tipo:  <thumb>\t<orig>\t<img|vid>
+export LC_ALL=C
+WALL_DIR="${SERAFIN_WALL_DIR:-$HOME/Pictures/Wallpapers}"
+CACHE="$HOME/.cache/serafin/thumbs"
+mkdir -p "$CACHE"
+
+find "$WALL_DIR" -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.mp4' -o -iname '*.mkv' -o -iname '*.webm' -o -iname '*.mov' \) 2>/dev/null | sort | while read -r f; do
+  base="$(basename "$f")"
+  thumb="$CACHE/${base}.jpg"
+  ext="${f##*.}"; ext="${ext,,}"
+  case "$ext" in
+    mp4|mkv|webm|mov|avi|gif) type="vid" ;;
+    *)                        type="img" ;;
+  esac
+  if [ ! -f "$thumb" ] || [ "$f" -nt "$thumb" ]; then
+    if [ "$type" = "vid" ]; then
+      ffmpeg -y -loglevel error -ss 3 -i "$f" -frames:v 1 -vf "scale=1280:-1" "$thumb" 2>/dev/null \
+        || ffmpeg -y -loglevel error -i "$f" -frames:v 1 -vf "scale=1280:-1" "$thumb" 2>/dev/null
+    else
+      magick "$f" -resize 1280x -quality 88 "$thumb" 2>/dev/null
+    fi
+  fi
+  [ -f "$thumb" ] && printf '%s\t%s\t%s
+' "$thumb" "$f" "$type"
+done

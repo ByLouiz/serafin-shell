@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -uo pipefail
+REPO="$HOME/Projects/serafin-shell"
+mkdir -p "$REPO"/quickshell/serafin "$REPO"/bin "$REPO"/matugen/templates "$REPO"/hypr
+
+cp -f  "$HOME/.config/quickshell/serafin/shell.qml"       "$REPO/quickshell/serafin/" 2>/dev/null || true
+cp -f  "$HOME/.config/quickshell/serafin/Wallpapers.qml"  "$REPO/quickshell/serafin/" 2>/dev/null || true
+cp -f  "$HOME/.config/quickshell/serafin/cava.conf"       "$REPO/quickshell/serafin/" 2>/dev/null || true
+cp -f  "$HOME/.local/bin/serafin-wall"                    "$REPO/bin/" 2>/dev/null || true
+cp -f  "$HOME/.local/bin/serafin-thumbs"                  "$REPO/bin/" 2>/dev/null || true
+cp -f  "$HOME/.local/bin/serafin-backup"                  "$REPO/bin/" 2>/dev/null || true
+cp -f  "$HOME/.config/matugen/config.toml"                "$REPO/matugen/" 2>/dev/null || true
+cp -rf "$HOME/.config/matugen/templates/."                "$REPO/matugen/templates/" 2>/dev/null || true
+cp -f  "$HOME/.config/hypr/hyprland.conf"                 "$REPO/hypr/" 2>/dev/null || true
+
+cat > "$REPO/.gitignore" <<'EOF'
+# generado por matugen (cambia con cada wallpaper) → no versionar
+quickshell/serafin/colors.json
+EOF
+
+cat > "$REPO/README.md" <<'EOF'
+# Serafín Shell
+
+Barra + visualizador de audio (domo/pulse) para Quickshell (QML), temática angelical.
+Corre con: `qs -c serafin`
+
+## Estructura
+- `quickshell/serafin/` → shell.qml, Wallpapers.qml, cava.conf
+- `bin/` → serafin-wall (cambia wallpaper + recolorea), serafin-thumbs, serafin-backup
+- `matugen/` → config.toml y plantillas de color
+- `hypr/` → hyprland.conf
+
+Por ByLouiz.
+EOF
+
+cd "$REPO"
+[ -d .git ] || git init -q
+git add -A
+git commit -q -m "Serafín: respaldo $(date +%F_%H:%M)" && echo "OK: commit hecho" || echo "Nada nuevo que guardar"
+echo "Repo local: $REPO"

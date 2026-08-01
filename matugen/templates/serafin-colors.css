@@ -1,0 +1,11 @@
+:root {
+  --border:    {{colors.primary.default.hex}};
+  --border-2:  {{colors.tertiary.default.hex}};
+  --wacc:      {{colors.primary.default.hex}};
+  --wacc2:     {{colors.tertiary.default.hex}};
+  --accent:    {{colors.primary.default.hex}};
+  --accent-2:  {{colors.tertiary.default.hex}};
+  --bg-deep:   {{colors.surface.default.hex}};
+  --text:      {{colors.on_surface.default.hex}};
+  --text-dim:  {{colors.outline.default.hex}};
+}

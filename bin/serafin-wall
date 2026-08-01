@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# serafin-wall — cambia el wallpaper SIN parpadeo (IPC de mpv) y recolorea. Requiere: socat
+export LC_ALL=C
+set -uo pipefail
+
+WALL_DIR="${SERAFIN_WALL_DIR:-$HOME/Pictures/Wallpapers}"
+STATE_DIR="$HOME/.config/serafin"
+LINK="$STATE_DIR/current-wallpaper"
+FRAME="$HOME/.cache/serafin-frame.png"
+LOG="$STATE_DIR/mpvpaper.log"
+SOCK="/tmp/serafin-mpv.sock"
+MPV_OPTS="no-audio loop-file=inf image-display-duration=inf hwdec=auto input-ipc-server=$SOCK"
+mkdir -p "$STATE_DIR" "$(dirname "$FRAME")"
+
+pick_gui() {
+  if command -v rofi >/dev/null 2>&1; then
+    local sel
+    sel="$(find "$WALL_DIR" -maxdepth 1 -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.mp4' -o -iname '*.mkv' -o -iname '*.webm' -o -iname '*.mov' \) -printf '%f
+' 2>/dev/null | sort | rofi -dmenu -i -p 'Wallpaper')"
+    [ -n "$sel" ] && printf '%s/%s' "$WALL_DIR" "$sel"
+    return
+  fi
+  command -v zenity >/dev/null 2>&1 && zenity --file-selection --filename="$WALL_DIR/" 2>/dev/null
+}
+
+ARG="${1:-}"
+case "$ARG" in
+  --random) WALL="$(find "$WALL_DIR" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' -o -iname '*.mp4' -o -iname '*.mkv' -o -iname '*.webm' -o -iname '*.mov' \) 2>/dev/null | shuf -n1)" ;;
+  "")       WALL="$(pick_gui || true)" ;;
+  *)        WALL="$ARG" ;;
+esac
+[ -z "${WALL:-}" ] && { echo "Serafín: no se eligió ningún wallpaper."; exit 1; }
+WALL="$(readlink -f "$WALL")"
+[ -f "$WALL" ] || { echo "Serafín: no existe el archivo: $WALL"; exit 1; }
+
+ln -sfn "$WALL" "$LINK"
+
+# fuente para el color: REUTILIZA la miniatura cacheada (rápido, sobre todo en .mp4)
+THUMB="$HOME/.cache/serafin/thumbs/$(basename "$WALL").jpg"
+if [ -f "$THUMB" ]; then
+  SRC="$THUMB"
+else
+  ext="${WALL##*.}"; ext="${ext,,}"
+  case "$ext" in
+    mp4|mkv|webm|mov|avi|gif)
+      ffmpeg -y -loglevel error -ss 3 -i "$WALL" -frames:v 1 "$FRAME" 2>/dev/null && SRC="$FRAME" || SRC="$WALL" ;;
+    *) SRC="$WALL" ;;
+  esac
+fi
+
+LUM="$(magick "$SRC" -colorspace Gray -resize 200x200 -format '%[fx:mean]' info: 2>/dev/null || echo 0.5)"
+MODE="dark"; awk "BEGIN{exit !($LUM > 0.6)}" && MODE="light"
+matugen image "$SRC" -m "$MODE" --source-color-index 0 2>/dev/null
+
+swapped=0
+if [ -S "$SOCK" ] && command -v socat >/dev/null 2>&1; then
+  if printf '{"command":["loadfile","%s","replace"]}
+' "$WALL" | socat - "UNIX-CONNECT:$SOCK" >/dev/null 2>&1; then
+    printf '{"command":["set_property","loop-file","inf"]}
+' | socat - "UNIX-CONNECT:$SOCK" >/dev/null 2>&1
+    swapped=1
+  fi
+fi
+if [ "$swapped" = "0" ]; then
+  pkill -x mpvpaper 2>/dev/null || true
+  sleep 0.3
+  setsid -f mpvpaper -o "$MPV_OPTS" '*' "$LINK" >"$LOG" 2>&1 \
+    || ( nohup mpvpaper -o "$MPV_OPTS" '*' "$LINK" >"$LOG" 2>&1 & )
+fi
+
+echo "Serafín: '$WALL' aplicado ($MODE)"

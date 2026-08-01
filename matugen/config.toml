@@ -1,0 +1,5 @@
+[config]
+
+[templates.serafin]
+input_path = "~/.config/matugen/templates/serafin.json"
+output_path = "~/.config/quickshell/serafin/colors.json"
