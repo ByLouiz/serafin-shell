@@ -1,0 +1,1225 @@
+¡Claro! Aquí está el documento completo:
+
+---
+
+# Serafín Shell — Documento maestro del proyecto
+
+> Una barra + visualizador de audio + launcher radial para Wayland, escrito en
+> Quickshell (QML), con temática angelical. Corre con `qs -c serafin`.
+>
+> Autor: **Louiz** (GitHub: ByLouiz) · Medellín, Colombia
+> Repo: github.com/ByLouiz/serafin-shell
+> Documento generado como bitácora viva del proyecto.
+
+---
+
+## Índice
+
+1. Sobre Louiz (el humano detrás de Serafín)
+2. Filosofía y estética del proyecto
+3. El entorno técnico
+4. Arquitectura general
+5. Convenciones y lecciones aprendidas (léelas antes de tocar código)
+6. Componente: `shell.qml` (la barra y el cerebro)
+7. Componente: el PULSE / domo
+8. Componente: `Wallpapers.qml` (selector coverflow)
+9. Componente: `Halo.qml` (launcher radial)
+10. Scripts de sistema: `serafin-wall` y `serafin-thumbs`
+11. Integración con Hyprland (keybinds y config)
+12. Lo que hemos hecho
+13. Lo que estamos haciendo
+14. Lo que haremos (roadmap)
+15. Guía de operación diaria
+
+---
+
+## 1. Sobre Louiz
+
+Louiz es un usuario de Linux de Medellín, Colombia, con un gusto marcadísimo por
+la estética y el detalle. No se conforma con "que funcione": quiere que **se sienta
+bien**, que el movimiento sea natural, que los menús salgan "como una masa estirada"
+desde la barra, que el wallpaper seleccionado se vea en el centro y crezca con
+naturalidad. Es exigente con la fluidez y con la coherencia visual — y con razón,
+porque el hardware obliga a ser cuidadoso (ver la sección del entorno).
+
+Características que definen cómo trabaja y cómo hay que trabajar con él:
+
+- **Habla y piensa en español.** Toda la comunicación del proyecto es en español.
+- **Itera con feedback visual.** No le sirve la teoría: prueba, mira, y dice "esto
+  está horrible" o "esto quedó perfecto". El ciclo es: cambio → `qs -c serafin` →
+  observa → corrige.
+- **Es dueño de dos perfiles Linux.** `arise` (donde vive y se desarrolla Serafín)
+  y `Louiz` (donde usa Caelestia como daily driver). Comparten el mismo sistema de
+  paquetes, así que tocar `pacman`/`paru` afecta a ambos — hay que tener cuidado.
+- **Le importa el rendimiento** porque su GPU es integrada (Intel UHD, sin dedicada).
+  Todo lo que sea caro (blur, sombras, framerates altos) se siente.
+- **Tiene criterio de diseño propio.** Sabe lo que quiere: paralelogramos inclinados
+  estilo coverflow, un halo angelical radial, un domo de audio liso y no dentado.
+- **Respalda su trabajo en Git** y le gusta tener las cosas ordenadas.
+
+En resumen: un creador de "ricing" serio, que trata su escritorio como una obra.
+
+---
+
+## 2. Filosofía y estética
+
+**Serafín** (de los serafines, los ángeles de más alto rango) es una shell con
+temática **angelical y etérea**. Los pilares estéticos:
+
+- **Logo ángel** dibujado a mano en Canvas (aureola + alas + túnica).
+- **Domo de audio** ("pulse") que asoma desde abajo como una colina viva que late
+  con la música — liso, no de barras dentadas.
+- **Halo**: un menú radial (launcher) que flota sobre el domo, con avatar central,
+  anillo de pulse reactivo y opciones en sectores circulares.
+- **Colores dinámicos** vía matugen: toda la shell se recolorea en vivo según el
+  wallpaper actual. Nada de colores hardcodeados salvo fallbacks.
+- **Movimiento con intención**: aperturas con rebote elástico (OutBack), cierres
+  secos (InCubic), transiciones tipo "masa estirada" para que los menús parezcan
+  derramarse desde la barra.
+
+La regla de oro: **nada debe sentirse mecánico**. Si un menú "aparece" en vez de
+"nacer", está mal.
+
+---
+
+## 3. El entorno técnico
+
+| Pieza | Detalle |
+|---|---|
+| **Distro** | CachyOS (basada en Arch) |
+| **Compositor** | Hyprland 0.55/0.56 (ya usa Lua internamente, pero el `.conf` sigue soportado hasta 0.57) |
+| **GPU** | Intel UHD integrada, **sin GPU dedicada** → el rendimiento importa mucho |
+| **AUR helper** | `paru` |
+| **Shell framework** | Quickshell (QML/Qt6) |
+| **Colores** | matugen (Material You desde el wallpaper) → `colors.json` |
+| **Audio viz** | cava (PipeWire → salida raw ASCII) |
+| **Wallpaper** | mpvpaper (soporta `.mp4` animados) controlado por IPC de mpv vía socat |
+| **Fuentes** | JetBrainsMono Nerd Font, Symbols Nerd Font, Inter |
+
+Rutas reales en la máquina de Louiz:
+
+- `~/.config/quickshell/serafin/` → `shell.qml`, `Halo.qml`, `Wallpapers.qml`, `cava.conf`, `colors.json`
+- `~/.local/bin/` → `serafin-wall`, `serafin-thumbs`, `serafin-backup`
+- `~/.config/hypr/` → `hyprland.conf`
+- `~/.config/matugen/` → plantillas de matugen
+- `~/.config/serafin/avatar.png` → foto del avatar del Halo (opcional; hay fallback)
+
+**Consecuencias de rendimiento (Intel UHD):**
+
+- Los `Canvas` se capan a ~30 fps (Timer de 33 ms).
+- Se evita `shadowBlur` en Canvas (render por software = carísimo). El glow se
+  eliminó del Halo por esto.
+- Los procesos (cava, nmcli, bluetoothctl) corren *on-demand* cuando es posible.
+- El domo del pulse solo corre su motor cuando está visible.
+
+---
+
+## 4. Arquitectura general
+
+Todo cuelga de un único `ShellRoot` en `shell.qml`. Dentro conviven:
+
+```
+ShellRoot
+├── theme        (QtObject)  → colores de matugen, con load() desde colors.json
+├── audio        (QtObject)  → volumen/mute vía Pipewire
+├── power         (QtObject)  → batería + perfiles de energía (powerprofilesctl)
+├── net           (QtObject)  → Wi-Fi vía nmcli
+├── bt            (QtObject)  → Bluetooth vía bluetoothctl
+├── ui            (QtObject)  → estado global de visibilidad/hover/flags
+├── FileView colorsFile       → vigila colors.json y recolorea en vivo
+├── PanelWindow win           → LA BARRA (capa Overlay) + popouts curvos
+├── Wallpapers wallpaperPicker → selector coverflow (capa Top)
+├── Halo halo                  → launcher radial (capa Top)
+└── PanelWindow pulseWin       → EL DOMO/PULSE (capa Top)
+```
+
+**Capas (layer-shell):**
+- La **barra** vive en `WlrLayer.Overlay` (siempre encima).
+- El **pulse**, el **Halo** y el **selector de wallpapers** viven en `WlrLayer.Top`.
+- El orden de instanciación importa: el Halo se declara **antes** del pulse para
+  quedar por debajo de él en la misma capa.
+
+**Sistema de visibilidad (`ui`):** una red de propiedades derivadas decide cuándo
+se ve cada cosa. El domo aparece siempre en escritorio libre; con ventanas abiertas
+aparece al pasar el ratón por abajo. La barra se auto-oculta salvo cuando hay un
+popout abierto, o el selector/halo están abiertos.
+
+---
+
+## 5. Convenciones y lecciones
+
+Estas reglas se ganaron a golpes. **Respétalas.**
+
+1. **QML: nombres de propiedades Y de funciones deben empezar en minúscula.**
+   Constantes como `CX`, `SZ`, `SEGS` rompen la carga (`Property/Method names cannot
+   begin with an upper case letter`). Se renombraron todas (`cx`, `sz`, `segs`, `pol()`).
+
+2. **En `Canvas` sobre layer-shell usa `renderTarget: Canvas.Image` +
+   `renderStrategy: Canvas.Immediate`.** El `FramebufferObject` no compone bien y
+   deja el canvas en blanco.
+
+3. **NUNCA uses `replaceall` en micro.** Es agresivo y case-insensitive: una vez
+   convirtió `addColorStop(` en `addColorStopol(` y `Inter` en `InterInter`,
+   corrompiendo el archivo. Preferir pegar archivos completos o `sed` quirúrgico.
+
+4. **Evita `shadowBlur` en Canvas.** En Intel UHD el render por software hace que
+   el blur gaussiano por frame sea el mayor cuello de botella. Se puso todo a 0.
+
+5. **Entrega de archivos a prueba de corrupción.** La terminal a veces es bash y el
+   paste multilínea se corrompe. Métodos fiables, en orden:
+   - `sed` quirúrgico para cambios pequeños y puntuales.
+   - Para archivos completos: **gzip + base64 en una sola línea**:
+     ```bash
+     # generar (lado dev):  gzip -c Halo.qml | base64 -w0
+     echo 'BASE64...' | base64 -d | gunzip > ~/.config/quickshell/serafin/Halo.qml
+     ```
+     Una sola línea = no hay pega multilínea que corromper.
+
+6. **Locale es_CO usa coma decimal.** En scripts que parsean flotantes, `export LC_ALL=C`.
+
+7. **No tocar paquetes del sistema a la ligera** (afecta a `arise` y a `Louiz`).
+
+8. **Migración a Lua de Hyprland: aún NO.** El `.conf` sigue soportado hasta 0.57.
+   Se migra cuando todo esté listo.
+
+---
+
+## 6. shell.qml
+
+Es el corazón. Contiene el `theme`, los servicios (audio, power, net, bt), el estado
+global `ui`, la barra con sus popouts curvos, y los enganches (hooks) hacia el Halo,
+el selector de wallpapers y el pulse.
+
+### 6.1 Ideas clave del diseño
+
+- **`theme` + `FileView`**: matugen escribe `colors.json`; el `FileView` lo vigila
+  (`watchChanges: true`) y `theme.load()` recolorea todo en vivo. Si el JSON es
+  inválido, mantiene los defaults (nunca se rompe).
+- **Popout "masa estirada"**: el menú nace angosto pegado a la barra (cuello) y se
+  estira hacia arriba ensanchándose, con un `Scale` cuyo `xScale`/`yScale` dependen
+  de una propiedad `grow` animada a mano (rebote al abrir, seco al cerrar). Se
+  reinicia en CADA apertura y en CADA cambio de menú.
+- **Hover fiable**: en vez de 4 `HoverHandler` sueltos (que se pisaban), hay UNA
+  `MouseArea` con `acceptedButtons: Qt.NoButton` que detecta el chip bajo el ratón
+  por posición. Un `closeTimer` re-verifica dónde está el ratón antes de cerrar →
+  ya no se cierra "cuando quiere".
+- **Bluetooth anti-parpadeo**: tras un toggle manual no se pisa el estado durante
+  2.5 s (el adaptador tarda ~1 s en reflejar el cambio), y el refresco post-acción
+  se retrasa 1.5 s. Los nombres se limpian con `sed`/`awk` desde `bluetoothctl info`.
+- **Workspaces**: isla con un `activePill` que se desliza, un `WedgeMarker` (marcador
+  tipo pacman dibujado en Canvas) y los iconos de las apps abiertas por workspace.
+
+### 6.2 Código completo
+
+```qml
+//  Serafín Shell · pulse vectorial (QtQuick.Shapes + MSAA) = domo totalmente liso
+//  ~/.config/quickshell/serafin/shell.qml   ·   qs -c serafin
+
+import QtQuick
+import QtQuick.Layouts
+import QtQuick.Shapes
+import QtQuick.Effects
+import Quickshell
+import Quickshell.Io
+import Quickshell.Wayland
+import Quickshell.Hyprland
+import Quickshell.Services.Pipewire
+import Quickshell.Services.UPower
+
+ShellRoot {
+
+    QtObject {
+        id: theme
+        // colores por defecto (fallback si aún no corriste matugen)
+        property color barBg:   "#141419"
+        property color accent:  "#b4befe"
+        property color accent2: "#cba6f7"
+        property color text:    "#cdd6f4"
+        property color textDim: "#7f849c"
+        property color island:  Qt.rgba(1, 1, 1, 0.07)
+
+        // aplica los colores de matugen (colors.json). Si falla, mantiene los de arriba.
+        function load(txt) {
+            try {
+                var c = JSON.parse(txt);
+                if (c.barBg)   barBg   = c.barBg;
+                if (c.accent)  accent  = c.accent;
+                if (c.accent2) accent2 = c.accent2;
+                if (c.text)    text    = c.text;
+                if (c.textDim) textDim = c.textDim;
+            } catch (e) { console.log("Serafín: colors.json inválido, usando defaults"); }
+        }
+    }
+
+    // lee y vigila los colores generados por matugen (recolorea en vivo al cambiar el wallpaper)
+    FileView {
+        id: colorsFile
+        path: "/home/arise/.config/quickshell/serafin/colors.json"
+        watchChanges: true
+        onLoaded: theme.load(colorsFile.text())
+        onFileChanged: colorsFile.reload()
+    }
+
+    PwObjectTracker { objects: [Pipewire.defaultAudioSink] }
+
+    QtObject {
+        id: audio
+        readonly property var  sink: Pipewire.defaultAudioSink
+        readonly property real volume: (sink && sink.audio) ? sink.audio.volume : 0
+        readonly property bool muted:  (sink && sink.audio) ? sink.audio.muted  : false
+        function setVolume(v) { if (sink && sink.audio) sink.audio.volume = Math.max(0, Math.min(1, v)); }
+        function toggleMute() { if (sink && sink.audio) sink.audio.muted = !sink.audio.muted; }
+        function icon() {
+            if (muted || volume <= 0) return "\uf026";
+            if (volume < 0.5)         return "\uf027";
+            return "\uf028";
+        }
+    }
+
+    // ── batería + perfil de energía (datos reales) ──
+    QtObject {
+        id: power
+        readonly property var  bat: UPower.displayDevice
+        readonly property real rawPct: bat ? bat.percentage : 0
+        // UPower a veces da 0–1 (fracción) y a veces 0–100 → normalizamos
+        readonly property int  percent: Math.round(rawPct <= 1 ? rawPct * 100 : rawPct)
+        readonly property bool charging: bat ? (bat.state === UPowerDeviceState.Charging || bat.state === UPowerDeviceState.FullyCharged) : false
+        property string profile: "balanced"   // performance | balanced | power-saver
+
+        function icon() {
+            if (charging) return "\uf0e7";     // rayo (cargando)
+            var p = percent;
+            if (p >= 90) return "\uf240";      // llena
+            if (p >= 62) return "\uf241";
+            if (p >= 37) return "\uf242";
+            if (p >= 12) return "\uf243";
+            return "\uf244";                   // vacía
+        }
+        function setProfile(p) {
+            setProfileProc.command = ["powerprofilesctl", "set", p];
+            setProfileProc.running = true;
+            profile = p;   // optimista; el Timer confirma
+        }
+    }
+
+    // lee el perfil de energía actual (y lo refresca)
+    Process {
+        id: profileProc
+        command: ["powerprofilesctl", "get"]
+        running: true
+        stdout: StdioCollector { id: profileOut; onStreamFinished: power.profile = profileOut.text.trim() }
+    }
+    Process { id: setProfileProc }
+    Timer { interval: 4000; running: true; repeat: true; onTriggered: profileProc.running = true }
+
+    // ── WIFI (NetworkManager / nmcli) ──
+    QtObject {
+        id: net
+        property bool wifiOn: true
+        property string ssid: ""      // red conectada ("" = ninguna)
+        property var    list: []      // [{ssid, signal, secure, active}]
+
+        function refresh()   { wifiRadioProc.running = true; wifiListProc.running = true; }
+        function rescan()    { wifiActProc.command = ["nmcli","dev","wifi","rescan"]; wifiActProc.running = true; }
+        function toggle()    { wifiActProc.command = ["nmcli","radio","wifi", wifiOn ? "off" : "on"]; wifiActProc.running = true; wifiOn = !wifiOn; }
+        function connectTo(s){ wifiActProc.command = ["nmcli","dev","wifi","connect", s]; wifiActProc.running = true; }
+
+        function parseRadio(t) { wifiOn = (t.trim() === "enabled"); }
+        function parseList(t) {
+            var lines = t.split("\n"), seen = {}, out = [], cur = "";
+            for (var i = 0; i < lines.length; i++) {
+                if (!lines[i]) continue;
+                var ln = lines[i].replace(/\\:/g, "\u0001");   // protege ':' escapados en el SSID
+                var f = ln.split(":");
+                if (f.length < 4) continue;
+                var active = (f[0] === "*");
+                var sig = parseInt(f[1]) || 0;
+                var sec = f[2];
+                var ss = f.slice(3).join(":").replace(/\u0001/g, ":");
+                if (!ss) continue;
+                if (active) cur = ss;
+                if (seen[ss] !== undefined) {
+                    if (sig > out[seen[ss]].signal) out[seen[ss]].signal = sig;
+                    if (active) out[seen[ss]].active = true;
+                    continue;
+                }
+                seen[ss] = out.length;
+                out.push({ ssid: ss, signal: sig, secure: (sec !== "" && sec !== "--"), active: active });
+            }
+            out.sort(function (a, b) { return b.signal - a.signal; });
+            net.ssid = cur; net.list = out.slice(0, 6);
+        }
+    }
+    Process { id: wifiListProc; running: true; command: ["nmcli","-t","-f","IN-USE,SIGNAL,SECURITY,SSID","dev","wifi"]; stdout: StdioCollector { id: wifiListOut; onStreamFinished: net.parseList(wifiListOut.text) } }
+    Process { id: wifiRadioProc; running: true; command: ["nmcli","-t","radio","wifi"]; stdout: StdioCollector { id: wifiRadioOut; onStreamFinished: net.parseRadio(wifiRadioOut.text) } }
+    Process { id: wifiActProc; onExited: net.refresh() }
+
+    // ── BLUETOOTH (BlueZ / bluetoothctl) ──
+    QtObject {
+        id: bt
+        property bool powered: false
+        property var  devices: []     // [{connected, icon, mac, name}]
+        property double lastToggle: 0 // momento del último toggle manual (protección anti-parpadeo)
+
+        function glyph(icon) {
+            if (!icon) return "\uf294";
+            if (icon.indexOf("audio") >= 0 || icon.indexOf("headset") >= 0 || icon.indexOf("headphone") >= 0) return "\uf025";
+            if (icon.indexOf("keyboard") >= 0) return "\uf11c";
+            if (icon.indexOf("phone") >= 0) return "\uf10b";
+            return "\uf294";
+        }
+        function refresh() { btProc.running = true; }
+        function toggle()  { lastToggle = Date.now(); btActProc.command = ["bluetoothctl","power", powered ? "off" : "on"]; btActProc.running = true; powered = !powered; }
+        function toggleDevice(mac, connected) { btActProc.command = ["bluetoothctl", connected ? "disconnect" : "connect", mac]; btActProc.running = true; }
+
+        function parse(t) {
+            var lines = t.split("\n"), devs = [];
+            for (var i = 0; i < lines.length; i++) {
+                var ln = lines[i]; if (!ln) continue;
+                // no pisar el estado justo tras un toggle manual (evita el "se apaga en unos segundos")
+                if (ln.indexOf("POWER:") === 0) { if (Date.now() - bt.lastToggle > 2500) bt.powered = (ln.substring(6).trim() === "1"); continue; }
+                if (ln.indexOf("DEV:") === 0) {
+                    var p = ln.substring(4).split("|");
+                    if (p.length >= 4) devs.push({ connected: (p[0] === "1"), icon: p[1], mac: p[2], name: p.slice(3).join("|") });
+                }
+            }
+            bt.devices = devs.slice(0, 5);
+        }
+    }
+    Process {
+        id: btProc
+        running: true
+        command: ["sh", "-c", "echo POWER:$(bluetoothctl show 2>/dev/null | grep -q 'Powered: yes' && echo 1 || echo 0); bluetoothctl devices 2>/dev/null | awk '{print $2}' | while read -r mac; do [ -z \"$mac\" ] && continue; info=$(bluetoothctl info \"$mac\" 2>/dev/null); echo \"$info\" | grep -q 'Paired: yes' || continue; conn=$(echo \"$info\" | grep -q 'Connected: yes' && echo 1 || echo 0); icon=$(echo \"$info\" | sed -n 's/^[[:space:]]*Icon: //p' | head -n1); name=$(echo \"$info\" | sed -n 's/^[[:space:]]*Name: //p' | head -n1); echo \"DEV:$conn|$icon|$mac|$name\"; done"]
+        stdout: StdioCollector { id: btOut; onStreamFinished: bt.parse(btOut.text) }
+    }
+    // tras encender/apagar o (des)conectar, el adaptador tarda ~1s en reflejar el cambio.
+    // Si refrescamos de inmediato leemos el estado viejo y parece que "se apaga solo" → usamos retardo.
+    Process { id: btActProc; onExited: btRefreshTimer.restart() }
+    Timer { id: btRefreshTimer; interval: 1500; repeat: false; onTriggered: bt.refresh() }
+
+    // refresco periódico (mantiene los chips al día)
+    Timer { interval: 12000; running: true; repeat: true; onTriggered: { net.refresh(); bt.refresh(); } }
+
+    QtObject {
+        id: ui
+        property bool atBottom: false
+        property bool overBar:  false
+        property string hoveredMod: ""
+        property real popoutCenterX: 0
+        property bool pinned: false
+        property bool booted: false          // entrada limpia: false hasta terminar el arranque
+        property bool overChips: false       // ratón sobre el grupo de chips de estado
+        property bool overPopout: false      // ratón sobre el menú desplegado
+        property bool wallOpen: false        // el selector de wallpapers está abierto
+        property bool haloOpen: false        // el menú radial (halo) está abierto
+        readonly property bool anyPopoutOpen: hoveredMod !== ""
+        readonly property bool hasWindows: {
+            const ws = Hyprland.focusedWorkspace;
+            if (!ws) return false;
+            const list = Hyprland.toplevels ? Hyprland.toplevels.values : [];
+            for (let i = 0; i < list.length; i++)
+                if (list[i].workspace && list[i].workspace.id === ws.id) return true;
+            return false;
+        }
+        // el PULSE/domo: SIEMPRE en escritorio libre; con ventanas aparece al pasar el ratón abajo
+        readonly property bool revealed:    pinned || !hasWindows || atBottom || overBar || anyPopoutOpen || wallOpen || haloOpen
+        // la BARRA: se auto-oculta siempre (aparece con el ratón abajo), incluso en escritorio libre
+        readonly property bool barRevealed: pinned || atBottom || overBar || anyPopoutOpen
+        readonly property bool barShown:    booted && revealed      // barra visible (fija en escritorio libre, no se auto-oculta)
+        readonly property bool pulseShown:  booted && revealed      // domo visible (siempre en escritorio libre)
+
+        function appGlyph(cls) {
+            const c = (cls || "").toLowerCase();
+            if (c.indexOf("firefox") >= 0 || c.indexOf("zen") >= 0) return "\uf269";
+            if (c.indexOf("chrom") >= 0 || c.indexOf("brave") >= 0)  return "\uf268";
+            if (c.indexOf("code") >= 0 || c.indexOf("codium") >= 0)  return "\ue70c";
+            if (c.indexOf("kitty") >= 0 || c.indexOf("term") >= 0 || c.indexOf("alacritty") >= 0 || c.indexOf("foot") >= 0) return "\uf120";
+            if (c.indexOf("thunar") >= 0 || c.indexOf("nautilus") >= 0 || c.indexOf("dolphin") >= 0 || c.indexOf("files") >= 0) return "\uf07c";
+            if (c.indexOf("spotify") >= 0) return "\uf1bc";
+            if (c.indexOf("discord") >= 0) return "\uf392";
+            if (c.indexOf("telegram") >= 0) return "\uf2c6";
+            if (c.indexOf("mpv") >= 0 || c.indexOf("vlc") >= 0) return "\uf03d";
+            if (c.indexOf("steam") >= 0) return "\uf1b6";
+            if (c.indexOf("obs") >= 0) return "\uf03d";
+            return "\uf2d0";
+        }
+    }
+
+    // entrada limpia: activa la aparición ~500ms después de cargar (evita el flash)
+    Timer { interval: 500; running: true; repeat: false; onTriggered: ui.booted = true }
+```
+
+> **Nota:** el bloque de arriba es la primera mitad de `shell.qml` (servicios + estado).
+> La segunda mitad es la `PanelWindow` de la barra (logo, workspaces, buscador, reloj,
+> chips, popouts curvos) y los enganches hacia Wallpapers/Halo/Pulse. Los enganches clave son:
+
+```qml
+    // Selector de wallpapers (capa Top, debajo de barra y pulse)
+    Wallpapers {
+        id: wallpaperPicker
+        accent: theme.accent; accent2: theme.accent2
+        barBg: theme.barBg; textCol: theme.text; textDim: theme.textDim
+    }
+    Connections {
+        target: wallpaperPicker
+        function onShownChanged() { ui.wallOpen = wallpaperPicker.shown; }
+    }
+    IpcHandler {
+        target: "wallpaper"
+        function toggle(): void { wallpaperPicker.toggle(); }
+        function open(): void  { wallpaperPicker.open(); }
+        function close(): void { wallpaperPicker.close(); }
+    }
+
+    // Halo · menú radial (capa Top, debajo de barra y pulse)
+    Halo {
+        id: halo
+        accent: theme.accent; accent2: theme.accent2
+        barBg: theme.barBg; textCol: theme.text
+        onRequestWallpaper: wallpaperPicker.open()
+        onRequestWallpaperRandom: wallRandomProc.running = true
+    }
+    Process { id: wallRandomProc; command: ["/home/arise/.local/bin/serafin-wall", "--random"] }
+    Connections {
+        target: halo
+        function onShownChanged() { ui.haloOpen = halo.shown; }
+    }
+    IpcHandler {
+        target: "halo"
+        function toggle(): void { halo.toggle(); }
+        function open(): void  { halo.open(); }
+        function close(): void { halo.close(); }
+    }
+```
+
+---
+
+## 7. El PULSE / domo
+
+El visualizador de audio es un **domo liso** (una colina) que asoma desde el borde
+inferior de la pantalla y late con la música. Se dibuja con `QtQuick.Shapes` + MSAA
+8x (no con Canvas), lo que da bordes perfectamente lisos.
+
+### 7.1 Cómo funciona
+
+- **Geometría de domo**: en vez de barras verticales independientes, se calcula una
+  silueta continua. La base sigue el arco de un círculo grande (`baseY(x)`), y sobre
+  esa base se levanta la altura de cada columna. El resultado es un domo curvo.
+- **Bandas aleatorias**: el ancho se divide en bandas de tamaño pseudo-aleatorio
+  (mulberry32 con semilla fija → siempre iguales). Cada columna interpola entre las
+  bandas vecinas → transiciones suaves.
+- **Envelope**: hace que el centro sea bajo, los laterales medios suban alto, y los
+  extremos caigan a cero (zona muerta) → cierra la silueta con gracia.
+- **cava real**: lee el espectro de PipeWire vía `cava`. Si cava deja de mandar datos
+  por 700 ms, entra un modo simulado (ondas seno).
+- **punch / bassBoost**: `punch` (>1) da contraste — solo los sonidos fuertes saltan.
+  `bassBoost` sube la ganancia de los graves.
+- **lean**: inclina las barras hacia su lado para un look más orgánico.
+- **attack/decay**: subida rápida (sensible) y bajada más lenta.
+- **Color**: cuerpo con el color de matugen y transparencia (`bodyAlpha`); borde fino
+  con la mezcla de accent+accent2.
+- **Sincronía con la barra**: el `Shape` se desliza en `y` junto con la barra.
+- **Ahorro**: el motor (Timer 33 ms) solo corre cuando `ui.pulseShown` es true.
+
+### 7.2 Función núcleo (envelope + buildPoints, versión inclinada)
+
+```qml
+function envelope(norm) {
+    if (norm >= nopulseFrom) return 0;
+    var ew;
+    if (norm <= peakAt) ew = centerVal + (midVal - centerVal) * smooth(norm / peakAt);
+    else                ew = midVal + (edgeVal - midVal) * smooth((norm - peakAt) / (1 - peakAt));
+    if (norm > edgeFadeFrom) ew *= 1 - (norm - edgeFadeFrom) / (nopulseFrom - edgeFadeFrom);
+    return Math.max(0, ew);
+}
+
+// SILUETA LISA + inclinada: los topes se desplazan hacia el lado (lean).
+function buildPoints() {
+    var nb = st.numBands; if (!nb) { bodyPath = ""; edgePath = ""; return; }
+    var cols = st.cols, W = st.W, H = st.H, cx = st.cx;
+    var xt = [], ys = [], vis = [];
+    var firstIdx = -1, lastIdx = -1;
+    for (var i = 0; i < cols; i++) {
+        var k = st.colK[i], hi = Math.min(k + 1, nb - 1), fr = st.colFr[i];
+        var v = st.curB[k] * (1 - fr) + st.curB[hi] * fr;
+        var xc = i * stepPx + stepPx / 2;
+        var by = baseY(xc);
+        var norm = Math.abs(xc - cx) / (W / 2);
+        var barH = v * st.colTerr[i] * maxBarHeight * envelope(norm) * level;
+        xt[i] = xc + lean * barH * (xc < cx ? -1 : 1);   // inclinación hacia su lado
+        ys[i] = by - barH;
+        vis[i] = (by <= H + 0.5);
+        if (vis[i]) { if (firstIdx < 0) firstIdx = i; lastIdx = i; }
+    }
+    if (firstIdx < 0) { bodyPath = ""; edgePath = ""; return; }
+    var floorY = (H + 40).toFixed(1);
+    var xStart = (firstIdx * stepPx + stepPx / 2).toFixed(1);
+    var xEnd   = (lastIdx  * stepPx + stepPx / 2).toFixed(1);
+    var bd = "M " + xStart + " " + floorY;
+    var ed = "", edStarted = false;
+    for (var i = firstIdx; i <= lastIdx; i++) {
+        if (!vis[i]) continue;
+        bd += " L " + xt[i].toFixed(1) + " " + ys[i].toFixed(1);
+        if (ys[i] <= H - 2) {
+            if (!edStarted) { ed = "M " + xt[i].toFixed(1) + " " + ys[i].toFixed(1); edStarted = true; }
+            else            ed += " L " + xt[i].toFixed(1) + " " + ys[i].toFixed(1);
+        }
+    }
+    bd += " L " + xEnd + " " + floorY + " Z";
+    bodyPath = bd;
+    edgePath = ed;
+}
+```
+
+> El pulse vive embebido en `shell.qml` (canonical). Existe también un
+> `pulseWin.qml` standalone que fue el prototipo original del domo — misma técnica,
+> sin el `punch`/`bassBoost`/`lean`.
+
+---
+
+## 8. Wallpapers.qml
+
+Selector de wallpapers estilo **coverflow con paralelogramos inclinados**, inspirado
+en dhrruvsharma/shell pero rehecho a la medida de Serafín.
+
+### 8.1 Comportamiento (todo aprobado por Louiz: "El tamaño está perfecto")
+
+- **Coverflow continuo**: una posición virtual `pos` (float 0..count-1) sigue al
+  ratón suavemente (mapeo absoluto con margen 8%–92% de la pantalla). Desplazarse es
+  con el **movimiento del ratón**; el click solo selecciona o marca.
+- **Tamaño por cercanía**: los wallpapers cercanos al centro se ven más grandes
+  (`wOf()`, `focalX()`); el seleccionado es **15% más grande** (`scale: 1.0 + 0.15*t`).
+- **Sin salto de frame**: la imagen es SIEMPRE la miniatura fija (`source: cell.thumb`,
+  `sourceSize.width: 1280`) → no recarga al cambiar de tamaño (antes saltaba feo).
+- **Paralelogramos**: esquinas rectas inclinadas; el recorte calza con el borde para
+  que la imagen no se salga.
+- **Abre centrado**: lee `current-wallpaper` y arranca con el fondo actual en el medio.
+- **Capa Top, oscurecido uniforme**: la barra y el pulse se ven nítidos por encima.
+- Se abre con **SUPER+SHIFT+W**.
+
+### 8.2 Dependencias
+
+- `serafin-thumbs` genera las miniaturas (1280px) — formato `thumb\torig\ttipo`.
+- `serafin-wall` aplica el fondo elegido.
+
+---
+
+## 9. Halo.qml
+
+El **launcher radial**: un menú circular que flota sobre el domo. Es lo que estamos
+puliendo ahora mismo. Nació de un prototipo HTML (Canvas 2D) que Louiz diseñó y que
+porté a QML Canvas casi 1:1.
+
+### 9.1 Anatomía
+
+- **Avatar central** (`~/.config/serafin/avatar.png`, con fallback a un ícono ángel).
+- **Anillo de pulse** alrededor del avatar, reactivo a cava (su propia instancia,
+  activa solo cuando el halo está abierto).
+- **5 sectores radiales**: Apps · Apagado · Wallpaper · PC · Captura. Cada uno tiene
+  subopciones que se expanden hacia afuera.
+- **Navegación angular**: al mover el ratón hacia afuera desde un sector, ese sector
+  se "arma" y despliega sus subopciones en un anillo exterior. El índice de subopción
+  se calcula por ángulo (`subIndexArc`).
+- **Se abre solo con tocar Super** (keybind IPC).
+- **Colores de matugen**, con `safeAccent()` que aclara colores muy oscuros.
+- **Fase 1 = solo visual + navegación + audio + color.** La única acción cableada es
+  **Wallpaper** (abre el selector de paralelogramos / aleatorio).
+
+### 9.2 Historia de bugs (todos resueltos)
+
+1. `Property/Method names cannot begin with an upper case letter` → se renombraron
+   todas las constantes y funciones a minúscula.
+2. Canvas en blanco → `renderTarget: Canvas.Image` + `renderStrategy: Canvas.Immediate`.
+3. `addColorStopol is not a function` → corrupción por `replaceall`; corregido con `sed`.
+4. `font families invalid: InterInter` → misma corrupción; corregido colapsando
+   repeticiones con `sed -E 's/(Inter){2,}/Inter/g'`.
+5. **Lag al expandir subopciones** → causado por `shadowBlur` (glow) en Canvas por
+   software. Se puso todo a 0 y se bajaron las barras del pulse de 120 a 80.
+
+### 9.3 Rediseño en curso (pendiente de cargar en la máquina)
+
+Louiz pidió 4 ajustes que **ya están aplicados en el código pero aún no cargados**:
+
+1. **Quitar el aro de pulse exterior** (`drawArcWave` ya no se llama).
+2. **Pulse del avatar estilo domo del escritorio**: silueta lisa (suavizado por
+   promedio de vecinos + curvas cuadráticas entre puntos medios) con cuerpo oscuro y
+   borde fino en degradado, en vez de barras dentadas.
+3. **Quitar el cuadro de texto** que marcaba la opción actual (`curLabel`).
+4. **Quitar la curva conectora** (`unifiedPath`): ahora la opción seleccionada
+   **crece** y las subopciones salen como un **anillo concéntrico directo** justo
+   afuera de ella, sin la curva intermedia.
+
+### 9.4 Código completo (versión actual, optimizada + rediseñada)
+
+```qml
+//  Serafín · Halo — menú radial (launcher) sobre el domo.
+//  Se abre con:  qs -c serafin ipc call halo toggle
+
+import QtQuick
+import Quickshell
+import Quickshell.Io
+import Quickshell.Wayland
+
+PanelWindow {
+    id: root
+
+    property color accent:  "#ff9c3a"
+    property color accent2: "#ffd27a"
+    property color barBg:   "#141419"
+    property color textCol: "#e7e2d5"
+
+    property bool shown: false
+    property real uiScale: Math.min(width, height) / 760 * 0.82
+
+    signal requestWallpaper()
+    signal requestWallpaperRandom()
+
+    function toggle() { if (shown) close(); else open(); }
+    function open()  { cv.reset(); shown = true; }
+    function close() { shown = false; }
+
+    anchors { top: true; bottom: true; left: true; right: true }
+    color: "transparent"
+    exclusiveZone: 0
+    WlrLayershell.layer: WlrLayer.Top
+    WlrLayershell.keyboardFocus: shown ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
+    mask: Region { item: root.shown ? backdrop : null }
+
+    Process {
+        id: cavaProc
+        running: root.shown
+        command: ["sh", "-c", "exec cava -p ~/.config/quickshell/serafin/cava.conf"]
+        stdout: SplitParser { onRead: line => cv.setCava(line) }
+    }
+
+    Rectangle {
+        id: backdrop
+        anchors.fill: parent
+        color: Qt.rgba(0, 0, 0, 0.55)
+        opacity: root.shown ? 1 : 0
+        visible: opacity > 0.01
+        Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+        MouseArea { anchors.fill: parent; onClicked: root.close() }
+    }
+
+    Item {
+        anchors.fill: parent
+        focus: root.shown
+        Keys.onEscapePressed: root.close()
+    }
+
+    Item {
+        id: stage
+        anchors.centerIn: parent
+        width: 760; height: 760
+        scale: root.uiScale
+        opacity: root.shown ? 1 : 0
+        visible: opacity > 0.01
+        Behavior on opacity { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+
+        Canvas {
+            id: cv
+            anchors.fill: parent
+            antialiasing: true
+            renderTarget: Canvas.Image
+            renderStrategy: Canvas.Immediate
+
+            readonly property int   sz: 760
+            readonly property real  cx: 380
+            readonly property real  cy: 380
+            readonly property real  tau: Math.PI * 2
+            readonly property int   r1i: 94
+            readonly property int   r1o: 190
+            readonly property int   r2i: 218
+            readonly property int   r2o: 288
+            readonly property int   rArcMax: 340
+            readonly property int   waveH: 18
+            readonly property int   rOuter: 362
+            readonly property int   hoverPop: 16
+            readonly property int   optOut: 200
+            readonly property int   centerDead: 58
+            readonly property real  gap: 0.025
+            readonly property real  cellAng: 0.5
+            readonly property int   pulseBars: 80
+            readonly property int   pulseRin: 56
+            readonly property int   pulseBarLen: 22
+
+            property var segs: [
+                { label:"Apps",      icon:"\uf009", color:"#5aa6ff", isApp:true,  subs:[
+                    {label:"Firefox",icon:"\uf269",color:"#ff8c5a"},{label:"VS Code",icon:"\ue70c",color:"#3e9bff"},
+                    {label:"Terminal",icon:"\uf120",color:"#b4befe"},{label:"Archivos",icon:"\uf07c",color:"#f9e2af"},
+                    {label:"Spotify",icon:"\uf1bc",color:"#1ed760"},{label:"btop",icon:"\uf080",color:"#cba6f7"}] },
+                { label:"Apagado",   icon:"\u23fb", color:"#ff5c5c", subs:[
+                    {label:"Apagar",icon:"\uf011",color:"#ff4d4d"},{label:"Reiniciar",icon:"\uf021",color:"#5aa6ff"},
+                    {label:"Hibernar",icon:"\uf186",color:"#cba6f7"},{label:"Sesión",icon:"\uf2f5",color:"#ffb35a"},
+                    {label:"Bloquear",icon:"\uf023",color:"#ffd35a"}] },
+                { label:"Wallpaper", icon:"\uf03e", color:"#7ee787", subs:[
+                    {label:"Elegir",icon:"\uf07c",color:"#7ee787"},{label:"Aleatorio",icon:"\uf074",color:"#5ce0a0"}] },
+                { label:"PC",        icon:"\uf108", color:"#ffd35a", isStat:true, subs:[
+                    {label:"CPU"},{label:"RAM"},{label:"Disco"},{label:"Red"}] },
+                { label:"Captura",   icon:"\uf030", color:"#5ce0e6", subs:[
+                    {label:"Grabar pantalla",icon:"\uf03d",color:"#5ce0e6"},{label:"Grabar área",icon:"\uf0c8",color:"#5ce0e6"},
+                    {label:"Captura completa",icon:"\uf030",color:"#89dceb"},{label:"Captura de área",icon:"\uf125",color:"#89dceb"}] }
+            ]
+            readonly property int  segN: segs.length
+            readonly property real segA: tau / segN
+
+            property var pulseValues: []
+            property var pulseTargets: []
+            property real beatIntensity: 0
+            property real introMenu: 0
+            property var segP: []
+            property var subP: []
+            property real subExpandP: 0
+            property int subExpandSeg: -1
+            property int hSeg: -1
+            property int hSub: -1
+            property int armedSeg: -1
+            property string curLabel: ""
+            property real introStart: 0
+            property real lastT: 0
+            property bool needDraw: true
+
+            function reset() {
+                pulseValues = []; pulseTargets = [];
+                for (var i = 0; i < pulseBars; i++) { pulseValues.push(0); pulseTargets.push(0); }
+                segP = []; subP = [];
+                for (var s = 0; s < segN; s++) {
+                    segP.push(0);
+                    var arr = [], ns = (segs[s].subs || []).length;
+                    for (var j = 0; j < ns; j++) arr.push(0);
+                    subP.push(arr);
+                }
+                subExpandP = 0; subExpandSeg = -1; hSeg = -1; hSub = -1; armedSeg = -1;
+                introMenu = 0; introStart = Date.now(); lastT = 0; beatIntensity = 0; needDraw = true;
+            }
+
+            function clamp(x,a,b){ return Math.max(a, Math.min(b,x)); }
+            function lerp(a,b,t){ return a+(b-a)*t; }
+            function easeOut(t){ return 1-Math.pow(1-t,2.8); }
+            function easeInOut(t){ return t<0.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2; }
+            function hexToRgb(h){ h=(""+h).replace('#',''); if(h.length===3)h=h.split('').map(function(c){return c+c;}).join(''); return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)]; }
+            function rgba(hex,a){ var c=hexToRgb(hex); return "rgba("+c[0]+","+c[1]+","+c[2]+","+a+")"; }
+            function mixHex(a,b,t){ var c1=hexToRgb(a),c2=hexToRgb(b); function m(i){return Math.round(c1[i]+(c2[i]-c1[i])*t);} function h(x){var s=x.toString(16);return s.length<2?'0'+s:s;} return '#'+h(m(0))+h(m(1))+h(m(2)); }
+            function colHex(c){ function h(x){var s=Math.round(x*255).toString(16);return s.length<2?'0'+s:s;} return '#'+h(c.r)+h(c.g)+h(c.b); }
+            function relLum(hex){ var c=hexToRgb(hex); return (0.2126*c[0]+0.7152*c[1]+0.0722*c[2])/255; }
+            function safeAccent(hex){ var c=hexToRgb(hex),r=c[0],g=c[1],b=c[2],lum=relLum(hex); if(lum<0.5){var t=clamp((0.5-lum)/0.5,0,1)*0.9;r=Math.round(r+(255-r)*t);g=Math.round(g+(255-g)*t);b=Math.round(b+(255-b)*t);} function h(x){var s=x.toString(16);return s.length<2?'0'+s:s;} return '#'+h(r)+h(g)+h(b); }
+            function pol(a,r){ return [cx+Math.cos(a)*r, cy+Math.sin(a)*r]; }
+            function segStart(i){ return -Math.PI/2 + i*segA; }
+            function segMid(i){ return segStart(i)+segA/2; }
+            function subSpan(seg){ return Math.max(segA*1.15, Math.min(3.3, seg.subs.length*cellAng)); }
+            function subIndexArc(idx,raw){
+                var seg=segs[idx], ns=seg.subs.length, span=subSpan(seg), a0=segMid(idx)-span/2;
+                var rel=((raw-a0)%tau+tau)%tau;
+                if(rel<=span) return clamp(Math.floor(rel/(span/ns)),0,ns-1);
+                return (rel-span)<(tau-rel)?ns-1:0;
+            }
+            function bodyHex(){ return colHex(root.barBg); }
+
+            function setCava(line){
+                if(!line || line.length<3) return;
+                var parts=line.split(";"), vals=[];
+                for(var i=0;i<parts.length;i++){ if(parts[i]==="")continue; vals.push(clamp(parseFloat(parts[i])/1000,0,1)); }
+                if(!vals.length) return;
+                for(var b=0;b<pulseBars;b++){ var idx=Math.min(vals.length-1, Math.floor(b/pulseBars*vals.length)); pulseTargets[b]=vals[idx]; }
+            }
+
+            function roundedSectorPath(ctx,ri,ro,a0,a1,r){
+                var th=ro-ri, span=a1-a0;
+                r=Math.max(0,Math.min(r, th/2, span*ri*0.48, span*ro*0.48));
+                if(r<0.6){ ctx.beginPath();ctx.arc(cx,cy,ro,a0,a1);ctx.arc(cx,cy,ri,a1,a0,true);ctx.closePath();return; }
+                var aoO=r/ro, aoI=r/ri, p, e;
+                ctx.beginPath();
+                p=pol(a0+aoO,ro); ctx.moveTo(p[0],p[1]);
+                ctx.arc(cx,cy,ro,a0+aoO,a1-aoO);
+                p=pol(a1,ro); e=pol(a1,ro-r); ctx.quadraticCurveTo(p[0],p[1],e[0],e[1]);
+                e=pol(a1,ri+r); ctx.lineTo(e[0],e[1]);
+                p=pol(a1,ri); e=pol(a1-aoI,ri); ctx.quadraticCurveTo(p[0],p[1],e[0],e[1]);
+                ctx.arc(cx,cy,ri,a1-aoI,a0+aoI,true);
+                p=pol(a0,ri); e=pol(a0,ri+r); ctx.quadraticCurveTo(p[0],p[1],e[0],e[1]);
+                e=pol(a0,ro-r); ctx.lineTo(e[0],e[1]);
+                p=pol(a0,ro); e=pol(a0+aoO,ro); ctx.quadraticCurveTo(p[0],p[1],e[0],e[1]);
+                ctx.closePath();
+            }
+            function drawRoundedSector(ctx,ri,ro,a0,a1,r,bodyA,col,strokeA,strokeW,glow,alpha){
+                if(a1<=a0+0.001||alpha<0.005)return;
+                ctx.save(); ctx.globalAlpha=clamp(alpha,0,1);
+                roundedSectorPath(ctx,ri,ro,a0,a1,r);
+                if(bodyA>0.001){ ctx.fillStyle=rgba(bodyHex(),bodyA); ctx.fill(); }
+                ctx.strokeStyle=rgba(col,strokeA); ctx.lineWidth=strokeW; ctx.stroke();
+                ctx.restore();
+            }
+            function unifiedPath(ctx,aOptL,aOptR,bandL,bandR,ri,rOpt,rBin,rBout){
+                var bow=0.09, mLo=lerp(rOpt,rBin,0.25), mHi=lerp(rOpt,rBin,0.8), q,c1,c2,e;
+                ctx.beginPath();
+                q=pol(aOptL,ri); ctx.moveTo(q[0],q[1]);
+                ctx.arc(cx,cy,ri,aOptL,aOptR);
+                q=pol(aOptR,rOpt); ctx.lineTo(q[0],q[1]);
+                c1=pol(aOptR-bow,mLo); c2=pol(aOptR-bow,mHi); e=pol(aOptR,rBin);
+                ctx.bezierCurveTo(c1[0],c1[1],c2[0],c2[1],e[0],e[1]);
+                ctx.arc(cx,cy,rBin,aOptR,bandR);
+                q=pol(bandR,rBout); ctx.lineTo(q[0],q[1]);
+                ctx.arc(cx,cy,rBout,bandR,bandL,true);
+                q=pol(bandL,rBin); ctx.lineTo(q[0],q[1]);
+                ctx.arc(cx,cy,rBin,bandL,aOptL);
+                c1=pol(aOptL+bow,mHi); c2=pol(aOptL+bow,mLo); e=pol(aOptL,rOpt);
+                ctx.bezierCurveTo(c1[0],c1[1],c2[0],c2[1],e[0],e[1]);
+                q=pol(aOptL,ri); ctx.lineTo(q[0],q[1]);
+                ctx.closePath();
+            }
+            function drawText(ctx,text,x,y,size,color,alpha,font,glow){
+                ctx.save(); ctx.globalAlpha=clamp(alpha,0,1);
+                ctx.font=size+"px \""+(font||"JetBrainsMono Nerd Font")+"\"";
+                ctx.fillStyle=color; ctx.textAlign='center'; ctx.textBaseline='middle';
+                ctx.fillText(text,x,y); ctx.restore();
+            }
+            function drawPulseBars(ctx,B,B2,mA){
+                if(mA<0.05) return;
+                var MID=mixHex(B,B2,.5), step=tau/pulseBars;
+                // suavizado: promedio de vecinos para quitar los picos dentados (estilo domo liso)
+                var sm=[];
+                for(var i=0;i<pulseBars;i++){
+                    var pa=pulseValues[(i-1+pulseBars)%pulseBars], pb=pulseValues[i], pc=pulseValues[(i+1)%pulseBars];
+                    sm[i]=pa*0.25+pb*0.5+pc*0.25;
+                }
+                function pt(i){ var ang=-Math.PI/2+(i%pulseBars)*step, r=pulseRin+sm[i%pulseBars]*pulseBarLen; return [cx+Math.cos(ang)*r, cy+Math.sin(ang)*r]; }
+                // curva cerrada suave (quadratic entre puntos medios)
+                ctx.save(); ctx.beginPath();
+                var p0=pt(0), pl=pt(pulseBars-1);
+                ctx.moveTo((pl[0]+p0[0])/2,(pl[1]+p0[1])/2);
+                for(var i=0;i<pulseBars;i++){ var cur=pt(i), nxt=pt(i+1); ctx.quadraticCurveTo(cur[0],cur[1],(cur[0]+nxt[0])/2,(cur[1]+nxt[1])/2); }
+                ctx.closePath();
+                // cuerpo oscuro + borde fino de color en degradado (como el pulse del escritorio)
+                ctx.globalAlpha=0.92*mA; ctx.fillStyle=rgba(bodyHex(),0.92); ctx.fill();
+                var grad=ctx.createLinearGradient(cx-rOuter,0,cx+rOuter,0);
+                grad.addColorStop(0,B); grad.addColorStop(.5,MID); grad.addColorStop(1,B2);
+                ctx.globalAlpha=0.95*mA; ctx.strokeStyle=grad; ctx.lineWidth=1.8; ctx.lineJoin='round'; ctx.stroke();
+                ctx.restore();
+            }
+            function drawArcWave(ctx,B,B2,alpha,a0,span,baseR){
+                if(alpha<0.02)return;
+                var MID=mixHex(B,B2,.5);
+                var grad=ctx.createLinearGradient(cx-rOuter,0,cx+rOuter,0);
+                grad.addColorStop(0,B); grad.addColorStop(.5,MID); grad.addColorStop(1,B2);
+                ctx.save(); ctx.globalAlpha=0.9*alpha; ctx.strokeStyle=grad; ctx.lineWidth=2.5; ctx.lineCap='round'; ctx.shadowBlur=0;
+                ctx.beginPath(); ctx.arc(cx,cy,baseR,a0,a0+span); ctx.stroke(); ctx.restore();
+                var col=0.03, n=Math.max(6,Math.round(span/col)), st=span/n;
+                function hAt(i){ return pulseValues[Math.floor((i/n)*(pulseBars-1))]*waveH; }
+                ctx.save(); ctx.beginPath();
+                for(var i=0;i<=n;i++){ var p=pol(a0+i*st,baseR+hAt(i)); i===0?ctx.moveTo(p[0],p[1]):ctx.lineTo(p[0],p[1]); }
+                for(var i2=n;i2>=0;i2--){ var p2=pol(a0+i2*st,baseR-hAt(i2)); ctx.lineTo(p2[0],p2[1]); }
+                ctx.closePath(); ctx.globalAlpha=0.16*alpha; ctx.fillStyle=MID; ctx.fill(); ctx.restore();
+                ctx.save(); ctx.strokeStyle=grad; ctx.lineWidth=2; ctx.lineJoin='round'; ctx.lineCap='round';
+                ctx.globalAlpha=0.95*alpha;
+                ctx.beginPath();
+                for(var i3=0;i3<=n;i3++){ var p3=pol(a0+i3*st,baseR+hAt(i3)); i3===0?ctx.moveTo(p3[0],p3[1]):ctx.lineTo(p3[0],p3[1]); }
+                var ps=pol(a0,baseR-hAt(0)); ctx.moveTo(ps[0],ps[1]);
+                for(var i4=1;i4<=n;i4++){ var p4=pol(a0+i4*st,baseR-hAt(i4)); ctx.lineTo(p4[0],p4[1]); }
+                ctx.stroke(); ctx.restore();
+            }
+
+            onPaint: {
+                var ctx=getContext("2d");
+                var B=safeAccent(colHex(root.accent)), B2=safeAccent(colHex(root.accent2));
+                ctx.clearRect(0,0,sz,sz);
+                var mA=introMenu;
+                var expSeg=(subExpandSeg>=0 && subExpandP>0.01 && !segs[subExpandSeg].isStat)?subExpandSeg:-1;
+
+                drawPulseBars(ctx,B,B2,mA);
+
+                for(var i=0;i<segN;i++){
+                    if(i===expSeg) continue;
+                    var seg=segs[i],p=easeOut(segP[i]),col=seg.color;
+                    var a0=segStart(i)+gap,a1=segStart(i)+segA-gap,ro=lerp(r1o,r1o+8,p);
+                    drawRoundedSector(ctx,r1i,ro,a0,a1,12, lerp(0.78,0.92,p), col,lerp(0.40,1,p),lerp(1.6,2.8,p), lerp(0,6,p), mA);
+                }
+
+                var bandL=0,bandSpan=0,rIn=0,rOut=0,optRoExp=0,eItems=null,eNs=0,eCol='#fff';
+                if(expSeg>=0){
+                    var segE=segs[expSeg],prog=easeInOut(subExpandP),secMid=segMid(expSeg);
+                    eCol=segE.color; eItems=segE.subs||[]; eNs=eItems.length;
+                    var aOptL=segStart(expSeg)+gap, aOptR=segStart(expSeg)+segA-gap, halfOpt=(aOptR-aOptL)/2;
+                    var halfSubFull=subSpan(segE)/2-gap/2, halfSub=lerp(halfOpt,halfSubFull,prog);
+                    bandL=secMid-halfSub; bandSpan=2*halfSub;
+                    var subA=easeOut(subExpandP)*mA;
+                    // opción seleccionada: crece (más grande que las demás)
+                    optRoExp=lerp(r1o,r1o+28,prog);
+                    drawRoundedSector(ctx,r1i,optRoExp,aOptL,aOptR,12, 0.92, eCol,lerp(0.6,1,prog),lerp(2,3.4,prog), 0, mA);
+                    // subopciones: anillo concéntrico que continúa justo afuera de la opción (sin curva conectora)
+                    rIn=optRoExp+lerp(3,7,prog); rOut=lerp(optRoExp+10,r2o,prog);
+                    var cellSpan=bandSpan/eNs;
+                    for(var j=0;j<eNs;j++){
+                        var sp=easeOut(subP[expSeg][j]);
+                        var b0=bandL+j*cellSpan,b1=bandL+(j+1)*cellSpan,colS=eItems[j].color||eCol;
+                        var rOut2=rOut+hoverPop*sp;
+                        var ca0=b0+gap*0.6,ca1=b1-gap*0.6,corner=lerp(8,14,sp);
+                        ctx.save(); ctx.globalAlpha=subA;
+                        roundedSectorPath(ctx,rIn,rOut2,ca0,ca1,corner); ctx.fillStyle=rgba(bodyHex(),0.95); ctx.fill();
+                        ctx.fillStyle=rgba(colS,lerp(0.05,0.26,sp)); ctx.fill();
+                        ctx.strokeStyle=rgba(colS,lerp(0.5,1,sp)); ctx.lineWidth=lerp(1.4,2.6,sp); ctx.stroke();
+                        ctx.restore();
+                    }
+                }
+
+                for(var k=0;k<segN;k++){
+                    var segK=segs[k],pk=easeOut(segP[k]),colK=segK.color,roK=(k===expSeg)?optRoExp:lerp(r1o,r1o+8,pk);
+                    var mid=(r1i+roK)/2,ma=segMid(k),tx=cx+Math.cos(ma)*mid,ty=cy+Math.sin(ma)*mid;
+                    drawText(ctx,segK.icon,tx,ty+lerp(2,-10,pk),lerp(18,21,pk),colK,(pk*0.4+0.6)*mA,'JetBrainsMono Nerd Font',lerp(0,6,pk));
+                    drawText(ctx,segK.label.toUpperCase(),tx,ty+13,lerp(8,9,pk),colK,pk*mA,'Inter',lerp(0,5,pk));
+                }
+
+                if(expSeg>=0){
+                    var cs=bandSpan/eNs, subA2=easeOut(subExpandP)*mA;
+                    for(var m=0;m<eNs;m++){
+                        var mb0=bandL+m*cs,mb1=bandL+(m+1)*cs,cmid=(mb0+mb1)/2;
+                        var item=eItems[m],colM=item.color||eCol,spm=easeOut(subP[expSeg][m]);
+                        var rmid=(rIn+(rOut+hoverPop*spm))/2,mtx=cx+Math.cos(cmid)*rmid,mty=cy+Math.sin(cmid)*rmid;
+                        drawText(ctx,item.icon||"",mtx,mty-12,lerp(16,23,spm),colM,subA2,'JetBrainsMono Nerd Font',lerp(0,6,spm));
+                        drawText(ctx,item.label,mtx,mty+13,lerp(8,10.5,spm),colM,subA2,'Inter',lerp(0,5,spm));
+                    }
+                }
+            }
+
+            function handleMove(mx,my){
+                needDraw=true;
+                var dx=mx-cx, dy=my-cy, dist=Math.sqrt(dx*dx+dy*dy), raw=Math.atan2(dy,dx);
+                var optIdx=Math.floor((((raw+Math.PI/2)%tau+tau)%tau)/segA)%segN;
+                if(dist<centerDead){ hSub=-1; hSeg=(subExpandSeg>=0?subExpandSeg:-1); curLabel=""; return; }
+                if(dist<=optOut){
+                    armedSeg=optIdx; hSeg=optIdx; hSub=-1;
+                    subExpandSeg = segs[optIdx].isStat ? optIdx : -1;
+                    curLabel=segs[optIdx].label;
+                } else {
+                    if(subExpandSeg<0 && armedSeg>=0) subExpandSeg=armedSeg;
+                    if(subExpandSeg>=0){
+                        var seg=segs[subExpandSeg]; hSeg=subExpandSeg;
+                        if(seg.isStat){ hSub=-1; curLabel=seg.label; }
+                        else { hSub=subIndexArc(subExpandSeg,raw); curLabel=seg.subs[hSub].label; }
+                    } else { hSeg=optIdx; hSub=-1; curLabel=segs[optIdx].label; }
+                }
+            }
+            function activate(){
+                if(subExpandSeg>=0){
+                    var seg=segs[subExpandSeg];
+                    if(seg.label==="Wallpaper"){
+                        if(hSub===1) root.requestWallpaperRandom(); else root.requestWallpaper();
+                        root.close(); return;
+                    }
+                }
+                root.close();
+            }
+
+            Timer {
+                interval: 33; running: root.shown; repeat: true
+                onTriggered: {
+                    var now=Date.now();
+                    if(!cv.lastT) cv.lastT=now;
+                    var dt=cv.clamp((now-cv.lastT)/1000,0,0.05); cv.lastT=now;
+                    var it=(now-cv.introStart)/1000;
+                    cv.introMenu=cv.easeOut(cv.clamp(it/0.6,0,1));
+                    var moving = cv.introMenu<1;
+                    for(var i=0;i<cv.pulseBars;i++){ var d=cv.pulseTargets[i]-cv.pulseValues[i]; var spd=d>0?22:8;
+                        if(Math.abs(d)>0.002){ cv.pulseValues[i]+=d*Math.min(1,spd*dt); moving=true; } }
+                    var nb=Math.max(1,Math.floor(cv.pulseBars*0.12)), bass=0;
+                    for(var b=0;b<nb;b++) bass+=cv.pulseValues[b];
+                    cv.beatIntensity=cv.clamp(bass/nb,0,1);
+                    for(var s=0;s<cv.segN;s++){
+                        var tg=(cv.hSeg===s)?1:0, np=cv.clamp(cv.segP[s]+(tg-cv.segP[s])*6.5*dt,0,1);
+                        if(Math.abs(np-cv.segP[s])>0.0005)moving=true; cv.segP[s]=np;
+                        var subs=cv.segs[s].subs||[];
+                        for(var j=0;j<subs.length;j++){ var stt=(cv.hSeg===s&&cv.hSub===j)?1:0;
+                            var rate=(stt>cv.subP[s][j])?6.5:14, nsp=cv.clamp(cv.subP[s][j]+(stt-cv.subP[s][j])*rate*dt,0,1);
+                            if(Math.abs(nsp-cv.subP[s][j])>0.0005)moving=true; cv.subP[s][j]=nsp; }
+                    }
+                    var te=(cv.subExpandSeg>=0)?1:0, nE=cv.clamp(cv.subExpandP+(te-cv.subExpandP)*4.2*dt,0,1);
+                    if(Math.abs(nE-cv.subExpandP)>0.0005)moving=true; cv.subExpandP=nE;
+                    if(moving||cv.needDraw){ cv.requestPaint(); cv.needDraw=false; }
+                }
+            }
+
+            Component.onCompleted: reset()
+        }
+
+        Rectangle {
+            id: avatarWrap
+            width: 94; height: 94; radius: 47
+            anchors.centerIn: parent
+            color: root.barBg
+            border.width: 2; border.color: root.accent
+            clip: true
+            scale: 1 + cv.beatIntensity * 0.06
+            Image {
+                id: avatarImg
+                anchors.fill: parent
+                source: "file:///home/arise/.config/serafin/avatar.png"
+                fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+                visible: status === Image.Ready
+            }
+            Text {
+                anchors.centerIn: parent
+                visible: avatarImg.status !== Image.Ready
+                text: "\uf2c1"
+                color: root.accent
+                font.family: "Symbols Nerd Font"; font.pixelSize: 40
+            }
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+            onPositionChanged: (m) => cv.handleMove(m.x, m.y)
+            onClicked: cv.activate()
+        }
+    }
+}
+```
+
+---
+
+## 10. Scripts de sistema
+
+### 10.1 `serafin-wall` (cambio de fondo sin parpadeo + colores)
+
+Cambia el wallpaper **sin reiniciar mpvpaper** usando el **IPC de mpv** (socket vía
+socat) → no hay flash. Reutiliza la miniatura cacheada para que matugen sea rápido
+incluso en `.mp4`, y corre matugen justo antes del swap para que color y fondo lleguen
+casi juntos. Requiere `socat` y el autostart de mpvpaper con
+`input-ipc-server=/tmp/serafin-mpv.sock`. Usa `export LC_ALL=C` por el bug de la coma
+decimal del locale es_CO. Soporta `--random`.
+
+### 10.2 `serafin-thumbs` (generador de miniaturas)
+
+Genera miniaturas de 1280px de ancho para todos los wallpapers (imágenes y primer
+frame de los `.mp4`), en formato `thumb\torig\ttipo`. Esas miniaturas alimentan tanto
+al selector coverflow (para no recargar imágenes pesadas) como a matugen.
+
+### 10.3 `serafin-backup` (respaldo a Git)
+
+Junta los archivos dispersos (`~/.config/quickshell/serafin/`, `~/.local/bin/`,
+configs de hypr/matugen) en `~/Projects/serafin-shell` (repo git) para poder
+`git push`. Ya está publicado en `github.com/ByLouiz/serafin-shell` (público, ~91% QML).
+
+---
+
+## 11. Integración con Hyprland
+
+Keybinds relevantes:
+
+```ini
+# Abrir/cerrar el Halo con tocar Super (release)
+bindr = SUPER, Super_L, exec, qs -c serafin ipc call halo toggle
+
+# Selector de wallpapers
+bind = SUPER SHIFT, W, exec, qs -c serafin ipc call wallpaper toggle
+```
+
+> Caveat conocido del `bindr` de Super: puede dispararse tras combos `SUPER+tecla`.
+> Alternativas si molesta: `SUPER+Space` o un detector de "tap" real.
+
+Cambios de comportamiento aplicados:
+
+- `workspace, e+1/e-1` → `+1/-1`: moverse por **todos** los workspaces, incluidos los
+  vacíos (antes saltaba los vacíos).
+- Animación de workspaces cambiada a `slidevert` (vertical en vez de horizontal).
+- Autostart de mpvpaper con `input-ipc-server=/tmp/serafin-mpv.sock`.
+- Warning de `.conf` deprecado (migración a Lua en 0.57): **no migramos aún**.
+
+---
+
+## 12. Lo que hemos hecho
+
+- ✅ **Barra completa**: logo ángel, isla de workspaces (activePill deslizante,
+  WedgeMarker pacman, iconos de apps), buscador (placeholder), reloj, chips de
+  wifi/bt/audio/batería con **menús popout curvos "masa estirada"** que abren con
+  hover (zona única + re-verificación) y click de respaldo.
+- ✅ **Pulse/domo liso** con Shapes+MSAA, reactivo a cava real, colores de matugen
+  con transparencia, `punch`/`bassBoost`/`lean`, sincronizado con la barra.
+- ✅ **Batería + perfiles de energía**, **Wi-Fi (nmcli)**, **Bluetooth (bluetoothctl
+  con nombres limpios y protección anti-parpadeo)**.
+- ✅ **matugen en vivo**: `serafin-wall` + `FileView` vigilando `colors.json`.
+- ✅ **Selector de wallpapers coverflow** (paralelogramos) — aprobado.
+- ✅ **serafin-wall sin parpadeo** (IPC de mpv), **serafin-thumbs**, **serafin-backup**.
+- ✅ **Halo Fase 1**: visual + navegación radial + audio + color; acción Wallpaper
+  cableada. Bugs de carga, corrupción y **lag (glow)** resueltos.
+
+---
+
+## 13. Lo que estamos haciendo
+
+**Puliendo el Halo (rediseño de la sección 9.3):** los 4 ajustes de diseño ya están
+en el código (aro exterior quitado, pulse del avatar estilo domo liso, texto de
+opción quitado, curva conectora reemplazada por opción que crece + anillo
+concéntrico). **Falta cargarlo en la máquina de Louiz** con el método gzip+base64 de
+la sección 5.
+
+Próximo paso inmediato: cargar el nuevo `Halo.qml`, verificar que:
+1. El pulse del avatar se ve liso (no dentado) con borde de color.
+2. Ya no está el aro exterior ni el cuadro de texto.
+3. La opción seleccionada crece y las subopciones salen directo, sin curva.
+
+---
+
+## 14. Lo que haremos (roadmap)
+
+**Fase 2 del Halo — acciones reales:**
+- Cablear Apps (lanzar Firefox, VS Code, Terminal, Archivos, Spotify, btop).
+- Cablear Apagado (apagar, reiniciar, hibernar, cerrar sesión, bloquear).
+- Cablear Captura (grabar pantalla/área, captura completa/de área).
+- Widgets del sector **PC**: CPU / RAM / Disco / Red en vivo.
+
+**Fase 3 del Halo — pulido fino:**
+- Sonidos al hover.
+- Panel de ajustes.
+- Cambiar avatar desde la UI.
+
+**Otros:**
+- (Benigno) Arreglar el warning de anchors en `Wallpapers.qml[117]`
+  (`Item id: panel` con `left`+`right`+`horizontalCenter` → quitar el
+  `horizontalCenter` redundante).
+- Evaluar el keybind de Super (tap real vs combo).
+- **Migración de Hyprland a Lua** cuando todo esté estable (antes de 0.57).
+
+---
+
+## 15. Guía de operación diaria
+
+```bash
+# Recargar la shell (matar y relanzar)
+pkill -f "qs -c serafin"; qs -c serafin
+
+# Ver el log en vivo mientras iteras
+qs -c serafin      # deja la terminal abierta y observa los WARN/errores
+
+# Cambiar wallpaper (sin parpadeo, con recolor de matugen)
+serafin-wall ~/Pictures/Wallpapers/algo.mp4
+serafin-wall --random
+
+# Regenerar miniaturas (tras agregar wallpapers nuevos)
+serafin-thumbs
+
+# Respaldar a Git
+serafin-backup && cd ~/Projects/serafin-shell && git add -A && git commit -m "..." && git push
+
+# Abrir menús vía IPC (para probar sin keybind)
+qs -c serafin ipc call halo toggle
+qs -c serafin ipc call wallpaper toggle
+```
+
+**Entrega segura de archivos grandes (evita corrupción de la terminal):**
+
+```bash
+# Lado dev: generar el blob
+gzip -c Halo.qml | base64 -w0
+
+# Lado Louiz: pegar la línea completa y decodificar
+echo 'BASE64_DE_UNA_SOLA_LINEA' | base64 -d | gunzip > ~/.config/quickshell/serafin/Halo.qml
+```
+
+---
+
+*Fin del documento. Serafín sigue creciendo — este archivo es su bitácora viva.*
+
+---
+
+Ahí lo tienes completo, Louiz. También quedó guardado como `SERAFIN-SHELL.md` por si prefieres bajarlo como archivo. ¿Quieres que le agregue algo más (por ejemplo el código íntegro de `Wallpapers.qml` y los scripts `serafin-wall`/`serafin-thumbs` verbatim) o lo dejamos así por hoy? 🪽
